@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import time
 from threading import Lock
 from typing import Any
+
+from .database import db
 
 
 _LOCK = Lock()
@@ -21,6 +24,20 @@ def _clean_locked() -> None:
         _PROGRESS.pop(key, None)
 
 
+def _persist(request_id: str, payload: dict[str, Any]) -> None:
+    try:
+        with db() as conn:
+            conn.execute(
+                """
+                UPDATE search_jobs SET progress_json=?, updated_at=CURRENT_TIMESTAMP WHERE id=?
+                """,
+                (json.dumps(payload, ensure_ascii=False, separators=(",", ":")), request_id),
+            )
+    except Exception:
+        # Progress must never make the actual search fail.
+        return
+
+
 def start_progress(request_id: str | None, message: str = "准备搜索") -> None:
     if not request_id:
         return
@@ -37,6 +54,7 @@ def start_progress(request_id: str | None, message: str = "准备搜索") -> Non
             "started_at": _now(),
             "updated_at": _now(),
         }
+        _persist(request_id, _PROGRESS[request_id])
 
 
 def update_progress(request_id: str | None, **fields: Any) -> None:
@@ -48,6 +66,7 @@ def update_progress(request_id: str | None, **fields: Any) -> None:
             return
         current.update(fields)
         current["updated_at"] = _now()
+        _persist(request_id, current)
 
 
 def finish_progress(request_id: str | None, message: str = "搜索完成", status: str = "done") -> None:
@@ -61,6 +80,13 @@ def get_progress(request_id: str) -> dict[str, Any]:
         _clean_locked()
         current = _PROGRESS.get(request_id)
         if not current:
+            try:
+                with db() as conn:
+                    row = conn.execute("SELECT progress_json FROM search_jobs WHERE id=?", (request_id,)).fetchone()
+                if row and row["progress_json"]:
+                    return json.loads(row["progress_json"])
+            except Exception:
+                pass
             return {
                 "request_id": request_id,
                 "status": "missing",

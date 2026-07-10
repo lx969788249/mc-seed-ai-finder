@@ -136,6 +136,52 @@ def init_db() -> None:
             """
         )
         conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS search_jobs (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                payload_json TEXT NOT NULL,
+                secret_enc TEXT,
+                status TEXT NOT NULL DEFAULT 'queued',
+                progress_json TEXT,
+                result_json TEXT,
+                error_detail TEXT,
+                cancel_requested INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                started_at TEXT,
+                completed_at TEXT,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_search_jobs_status_created ON search_jobs(status, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_search_jobs_user_created ON search_jobs(user_id, created_at DESC)"
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS codex_runs (
+                id TEXT PRIMARY KEY,
+                source_run_key TEXT,
+                cluster_key TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'preparing',
+                branch_name TEXT,
+                worktree_path TEXT,
+                prompt_path TEXT,
+                result_path TEXT,
+                patch_path TEXT,
+                test_output_path TEXT,
+                error_detail TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at TEXT,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
             "UPDATE user_settings SET deepseek_model='deepseek-v4-flash' WHERE deepseek_model='deepseek-chat'"
         )
         conn.execute(

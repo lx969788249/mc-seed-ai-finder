@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "minecraft_version": "1.21.3",
+  "cubiomes_commit": "e61f90580cbdd883214a8054670dacae655e59c0",
+  "biome_cases": [
+    {
+      "name": "seed-0-origin-river",
+      "seed": "0",
+      "x": 0,
+      "z": 0,
+      "expected_biome": "river",
+      "height_min": 50,
+      "height_max": 60
+    },
+    {
+      "name": "seed-0-cherry-surface",
+      "seed": "0",
+      "x": -1024,
+      "z": 1344,
+      "expected_biome": "cherry_grove",
+      "height_min": 118,
+      "height_max": 130
+    },
+    {
+      "name": "seed-12345-origin-ocean",
+      "seed": "12345",
+      "x": 0,
+      "z": 0,
+      "expected_biome": "ocean",
+      "height_min": 45,
+      "height_max": 55
+    }
+  ],
+  "structure_cases": [
+    {
+      "name": "seed-0-nearest-villages",
+      "seed": "0",
+      "structure": "village",
+      "center_x": 0,
+      "center_z": 0,
+      "radius": 5000,
+      "expected": [[608, 720], [272, 944], [544, -1056]]
+    },
+    {
+      "name": "seed-0-nearest-witch-huts",
+      "seed": "0",
+      "structure": "witch_hut",
+      "center_x": 0,
+      "center_z": 0,
+      "radius": 10000,
+      "expected": [[-1824, 304], [-1680, 784], [-2320, -2544]]
+    },
+    {
+      "name": "seed-12345-nearest-villages",
+      "seed": "12345",
+      "structure": "village",
+      "center_x": 0,
+      "center_z": 0,
+      "radius": 5000,
+      "expected": [[-144, -832], [160, 880], [1200, -368]]
+    }
+  ]
+}

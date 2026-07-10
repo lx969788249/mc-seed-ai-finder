@@ -1650,6 +1650,13 @@ button.icon-button:hover {
   font-weight: 650;
 }
 
+.progress-actions {
+  display: flex;
+  justify-content: flex-end;
+  min-height: 32px;
+  margin-top: 12px;
+}
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }

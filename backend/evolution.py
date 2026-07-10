@@ -25,6 +25,7 @@ EVOLUTION_MAX_CLUSTER_EVENTS_PER_DAY = max(
     10,
     int(os.getenv("EVOLUTION_MAX_CLUSTER_EVENTS_PER_DAY", "100")),
 )
+EVOLUTION_CODEX_ENABLED = os.getenv("EVOLUTION_CODEX_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 _ACTIVITY_LOCK = threading.Lock()
 _ACTIVE_SEARCHES = 0
@@ -410,11 +411,16 @@ def evolution_status() -> dict[str, Any]:
         last_run = conn.execute(
             "SELECT * FROM evolution_runs ORDER BY started_at DESC, run_key DESC LIMIT 1"
         ).fetchone()
+        last_codex_run = conn.execute(
+            "SELECT * FROM codex_runs ORDER BY created_at DESC, id DESC LIMIT 1"
+        ).fetchone()
     return {
         "active_searches": active_search_count(),
         "event_count": event_count,
         "open_backlog_count": open_count,
         "last_run": dict(last_run) if last_run else None,
+        "codex_enabled": EVOLUTION_CODEX_ENABLED,
+        "last_codex_run": dict(last_codex_run) if last_codex_run else None,
         "next_window": f"{EVOLUTION_NIGHT_HOUR:02d}:{EVOLUTION_NIGHT_MINUTE:02d}",
     }
 
@@ -438,7 +444,11 @@ async def evolution_scheduler() -> None:
         day_key = now.date().isoformat()
         if now >= target and not _completed_today(day_key):
             if active_search_count() == 0:
-                run_evolution_cycle(day_key)
+                report = run_evolution_cycle(day_key)
+                if EVOLUTION_CODEX_ENABLED and report.get("items"):
+                    from .codex_runner import run_report
+
+                    await asyncio.to_thread(run_report, report)
                 continue
             await asyncio.sleep(300)
             continue

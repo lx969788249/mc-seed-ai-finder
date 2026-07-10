@@ -1,5 +1,6 @@
 const $ = (id) => document.getElementById(id);
 const STORAGE_KEY = "mc_seed_finder_settings_v1";
+const ACTIVE_JOB_KEY = "mc_seed_finder_active_job_v1";
 const WORLD_SEARCH_RADIUS = 30000000;
 const MAP_TILE_SIZE = 65;
 const MAP_TILE_INTERVALS = MAP_TILE_SIZE - 1;
@@ -311,24 +312,28 @@ function updateProgressUI(progress) {
   }
 }
 
-function startProgressPolling(requestId) {
-  activeProgressId = requestId;
+function startPersistentProgress(jobId) {
+  activeProgressId = jobId;
   clearInterval(progressTimer);
-  showProgressShell();
-  const poll = async () => {
-    try {
-      const data = await api(`/progress/${encodeURIComponent(requestId)}`);
-      if (activeProgressId !== requestId) return;
-      updateProgressUI(data);
-      if (data.status === "done" || data.status === "error") {
-        clearInterval(progressTimer);
-      }
-    } catch {
-      // Progress polling is best-effort; the search request itself still owns error reporting.
+  progressTimer = null;
+  showProgressShell("任务已进入搜索队列");
+  $("cancelSearchBtn").hidden = false;
+  $("cancelSearchBtn").disabled = false;
+  $("cancelSearchBtn").textContent = "取消搜索";
+}
+
+async function waitForPersistentJob(jobId) {
+  while (true) {
+    const job = await api(`/jobs/${encodeURIComponent(jobId)}`);
+    if (job.progress) updateProgressUI(job.progress);
+    if (job.cancel_requested && job.status === "running") {
+      updateProgressUI({ ...(job.progress || {}), message: "正在取消，当前 native 批次结束后停止" });
     }
-  };
-  poll();
-  progressTimer = setInterval(poll, 800);
+    if (job.status === "completed") return job.result;
+    if (job.status === "failed") throw new Error(job.error_detail || "搜索任务执行失败");
+    if (job.status === "cancelled") throw new Error("搜索已取消");
+    await new Promise((resolve) => setTimeout(resolve, 800));
+  }
 }
 
 function stopProgressPolling(message = "搜索完成", status = "done") {
@@ -337,6 +342,7 @@ function stopProgressPolling(message = "搜索完成", status = "done") {
   progressTimer = null;
   if (!requestId) return;
   updateProgressUI({ ...(lastProgressSnapshot || {}), status, stage: status, message });
+  $("cancelSearchBtn").hidden = true;
   setTimeout(() => {
     if (activeProgressId === requestId) {
       $("searchProgress").hidden = true;
@@ -1610,21 +1616,20 @@ async function runSearch(message) {
   saveLocalSettings({ normalize: true });
   setSearchBusy(true);
   setPlannerStatus("搜索中", "searching");
-  const requestId = makeRequestId();
-  startProgressPolling(requestId);
+  const clientRequestId = makeRequestId();
   try {
-    let payload;
+    let created;
     if (loggedIn) {
-      try {
-        await saveSettings({ quiet: true });
-        payload = await api("/chat", { method: "POST", body: JSON.stringify({ message, request_id: requestId }) });
-      } catch (saveOrChatError) {
-        showNotice(`账号保存/聊天失败，已改用直接搜索：${saveOrChatError.message}`, "warn");
-        payload = await api("/search", { method: "POST", body: JSON.stringify({ query: message, request_id: requestId, ...readSettings() }) });
-      }
+      await saveSettings({ quiet: true });
+      created = await api("/jobs/chat", { method: "POST", body: JSON.stringify({ message, request_id: clientRequestId }) });
     } else {
-      payload = await api("/search", { method: "POST", body: JSON.stringify({ query: message, request_id: requestId, ...readSettings() }) });
+      created = await api("/jobs/search", { method: "POST", body: JSON.stringify({ query: message, request_id: clientRequestId, ...readSettings() }) });
     }
+    const requestId = created.id;
+    localStorage.setItem(ACTIVE_JOB_KEY, JSON.stringify({ id: requestId, query: message }));
+    startPersistentProgress(requestId);
+    const payload = await waitForPersistentJob(requestId);
+    localStorage.removeItem(ACTIVE_JOB_KEY);
     addMessage("assistant", payload.reply);
     renderResults(payload);
     setResultFeedback({
@@ -1636,6 +1641,7 @@ async function runSearch(message) {
     showNotice("搜索完成", "ok");
     stopProgressPolling("搜索完成", "done");
   } catch (e) {
+    localStorage.removeItem(ACTIVE_JOB_KEY);
     setPlannerStatus("失败", "error");
     addMessage("assistant", e.message);
     showNotice(`搜索失败：${e.message}`, "error");
@@ -1645,6 +1651,50 @@ async function runSearch(message) {
     updateKeyState();
   }
 }
+
+async function resumePersistentSearch() {
+  let saved;
+  try {
+    saved = JSON.parse(localStorage.getItem(ACTIVE_JOB_KEY) || "null");
+  } catch {
+    localStorage.removeItem(ACTIVE_JOB_KEY);
+    return;
+  }
+  if (!saved?.id || !saved?.query) return;
+  setSearchBusy(true);
+  setPlannerStatus("恢复任务", "searching");
+  addMessage("user", saved.query);
+  startPersistentProgress(saved.id);
+  try {
+    const payload = await waitForPersistentJob(saved.id);
+    addMessage("assistant", payload.reply);
+    renderResults(payload);
+    setResultFeedback({ query: saved.query, request_id: saved.id, planner: payload.planner, plan: payload.plan });
+    stopProgressPolling("搜索完成", "done");
+    showNotice("已恢复上次搜索结果", "ok");
+  } catch (error) {
+    stopProgressPolling(error.message, "error");
+    showNotice(error.message, "warn");
+  } finally {
+    localStorage.removeItem(ACTIVE_JOB_KEY);
+    setSearchBusy(false);
+    updateKeyState();
+  }
+}
+
+$("cancelSearchBtn").onclick = async () => {
+  if (!activeProgressId) return;
+  const button = $("cancelSearchBtn");
+  button.disabled = true;
+  button.textContent = "正在取消";
+  try {
+    await api(`/jobs/${encodeURIComponent(activeProgressId)}/cancel`, { method: "POST", body: "{}" });
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "重试取消";
+    showNotice(`取消失败：${error.message}`, "warn");
+  }
+};
 
 $("unmetFeedbackBtn").onclick = async () => {
   if (!lastCompletedSearch) return;
@@ -1806,6 +1856,7 @@ async function initialize() {
   loadLocalSettings();
   updateSummary();
   await refreshMe();
+  resumePersistentSearch();
   await loadMap();
 }
 

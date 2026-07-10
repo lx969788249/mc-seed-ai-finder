@@ -1,5 +1,8 @@
 # Minecraft Seed AI Finder
 
+[![CI](https://github.com/lx969788249/mc-seed-ai-finder/actions/workflows/ci.yml/badge.svg)](https://github.com/lx969788249/mc-seed-ai-finder/actions/workflows/ci.yml)
+[![Docker](https://img.shields.io/docker/v/lx969788249/mc-seed-ai-finder?sort=semver&label=Docker)](https://hub.docker.com/r/lx969788249/mc-seed-ai-finder)
+
 面向 Minecraft Java 的自然语言种子搜索工具。输入“村庄背靠樱花林、坐落于草原、面朝大海，并且 800 格内有女巫小屋”这类条件，系统会拆解结构、群系、距离和方向约束，再返回坐标、地图与检查结果。
 
 项目由 FastAPI 后端、Minecraft native 查询核心和 Minecraft 风格前端组成。默认按 Minecraft Java 26.2 的兼容规则工作，并明确标注近似结果。
@@ -33,6 +36,8 @@ docker logs -f mc-seed-ai-finder
 
 当前镜像面向 `linux/amd64`；ARM 服务器需要自行构建对应架构镜像。
 
+仓库的发布工作流会同时构建 `linux/amd64` 和 `linux/arm64`。启用自动发布前，需要在 GitHub 仓库 Secrets 中配置 `DOCKERHUB_TOKEN`。
+
 ## 使用流程
 
 1. 注册或登录账号。
@@ -55,6 +60,8 @@ docker logs -f mc-seed-ai-finder
 - 面积条件：估算群系连通面积，支持“最大的蘑菇岛”和“靠近更大的海洋”等描述。
 - 地表俯视地图：用近似地形高度生成山脊、坡面和海岸明暗，避免把洞穴群系显示成地表群系。
 - 多核 native 查询：独立查询通过多个 subprocess 并行执行，并支持 batch 和锚点组合剪枝。
+- 持久搜索任务：任务、进度和结果写入 SQLite，刷新页面可继续追踪，服务重启会重新排队中断任务。
+- 下沉地图缓存：gzip tile 缓存在数据卷中，容器重启后仍可复用。
 - 未满足需求反馈：用户可以标记结果未解决，后台会脱敏记录并在夜间聚类。
 
 ## 精度边界
@@ -120,6 +127,10 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000
 | `MCFINDER_EVOLUTION_DIR` | 自我进化报告目录 | `data/evolution` |
 | `MC_QUERY_WORKERS` | native 查询并行度 | 根据 CPU 自动选择 |
 | `MC_QUERY_BATCH_SIZE` | 每个 native batch 的查询数量 | `64` |
+| `SEARCH_JOB_WORKERS` | 持久搜索队列 worker 数量 | `1` |
+| `SEARCH_JOB_RETENTION_DAYS` | 已完成任务保留天数 | `30` |
+| `MCFINDER_MAP_CACHE_MAX_AGE_DAYS` | 地图 tile 缓存天数 | `30` |
+| `MCFINDER_MAP_CACHE_MAX_BYTES` | 地图缓存容量上限 | `2147483648` |
 | `EVOLUTION_NIGHT_HOUR` | 夜间聚合小时 | `3` |
 | `EVOLUTION_NIGHT_MINUTE` | 夜间聚合分钟 | `30` |
 | `EVOLUTION_RETENTION_DAYS` | 反馈保留天数 | `90` |
@@ -135,6 +146,12 @@ uvicorn backend.main:app --host 0.0.0.0 --port 8000
 - `data/evolution/runs/`：历史聚合结果。
 
 当前阶段只生成修复任务，不会让线上进程直接修改或发布自身代码。后续接入 Codex 时，应保留隔离分支、自动测试、行为验收和人工批准四道门槛。
+
+仓库已经提供隔离 Codex 执行器。默认关闭；启用 `EVOLUTION_CODEX_ENABLED=1` 后，夜间任务只会在独立 Git worktree 中修改代码，运行 `make test` 和种子基准，生成待审核 patch，不会提交、推送、合并或部署。也可以先查看执行计划：
+
+```bash
+python3 -m backend.codex_runner --dry-run
+```
 
 手动生成报告：
 
@@ -152,10 +169,17 @@ python3 -m backend.evolution
 - `PUT /settings`
 - `POST /chat`
 - `POST /search`
+- `POST /jobs/chat`
+- `POST /jobs/search`
+- `GET /jobs/{job_id}`
+- `POST /jobs/{job_id}/cancel`
 - `POST /feedback/unmet`
 - `GET /evolution/status`
 - `GET /catalog`
 - `GET /backends`
+- `GET /health/live`
+- `GET /health/ready`
+- `GET /metrics`
 
 `/chat` 使用登录用户保存的配置；`/search` 支持直接传入 `query`、`seed`、`version`、`center_x`、`center_z` 和 `max_results` 做无登录测试。
 
@@ -171,10 +195,11 @@ python3 -m backend.evolution
 
 ```bash
 make test
+make validate-seeds
 curl -fsS http://127.0.0.1:8000/catalog
 ```
 
-当前测试覆盖面积搜索、相对布局、地表地图和自我进化反馈，共 18 项标准库 `unittest` 测试。
+当前测试覆盖种子基准、持久任务、地图缓存、可观测性、Codex 门禁、面积搜索、相对布局、地表地图和自我进化反馈，共 30 项标准库 `unittest` 测试。
 
 ## 许可证和依赖
 

@@ -6,7 +6,7 @@ CUBIOMES_DIR := vendor/cubiomes
 CUBIOMES_LIB := $(CUBIOMES_DIR)/libcubiomes.a
 MC_QUERY := native/mc_query
 
-.PHONY: all native test clean
+.PHONY: all native test validate-seeds clean
 
 all: native
 
@@ -20,6 +20,9 @@ $(MC_QUERY): native/mc_query.c $(CUBIOMES_LIB)
 
 test: native
 	$(PYTHON) -m unittest discover -s tests -v
+
+validate-seeds: native
+	$(PYTHON) scripts/validate_seeds.py
 
 clean:
 	$(MAKE) -C $(CUBIOMES_DIR) clean

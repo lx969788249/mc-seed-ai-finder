@@ -2,19 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Response, Cookie
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from .auth import create_user, current_user, login_user, logout_user, optional_user
 from .catalog import catalog_payload
 from .database import init_db
 from .evolution import (
+    active_search_count,
     evolution_status,
     record_unmet_request,
     search_activity_finished,
@@ -22,6 +25,9 @@ from .evolution import (
     start_evolution_scheduler,
     stop_evolution_scheduler,
 )
+from .jobs import cancel_job, create_job, get_job, job_counts, list_jobs, start_job_workers, stop_job_workers
+from .map_cache import cache_stats, get_or_create as get_or_create_map
+from .observability import observe_search_stage, render_metrics, request_metrics_middleware
 from .mc_core import generate_map, search
 from .models import ChatIn, ChatOut, Credentials, MapIn, ModelsIn, SearchIn, SettingsIn, UnmetFeedbackIn
 from .planner import deepseek_plan, list_deepseek_models
@@ -34,6 +40,7 @@ ROOT = Path(__file__).resolve().parent.parent
 FRONTEND = ROOT / "frontend"
 
 app = FastAPI(title="Minecraft Seed AI Finder", version="0.1.0")
+app.middleware("http")(request_metrics_middleware)
 app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=4)
 app.add_middleware(
     CORSMiddleware,
@@ -48,10 +55,12 @@ app.add_middleware(
 async def startup() -> None:
     init_db()
     start_evolution_scheduler()
+    start_job_workers(_execute_persisted_job)
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    await stop_job_workers()
     await stop_evolution_scheduler()
 
 
@@ -92,6 +101,35 @@ def catalog():
     return catalog_payload()
 
 
+@app.get("/health/live")
+def health_live():
+    return {"status": "ok"}
+
+
+@app.get("/health/ready")
+def health_ready():
+    checks = {"database": False, "native": False}
+    try:
+        from .database import db
+
+        with db() as conn:
+            conn.execute("SELECT 1").fetchone()
+        checks["database"] = True
+    except Exception:
+        pass
+    checks["native"] = (ROOT / "native" / "mc_query").is_file()
+    ready = all(checks.values())
+    return JSONResponse({"status": "ok" if ready else "not_ready", "checks": checks}, status_code=200 if ready else 503)
+
+
+@app.get("/metrics")
+def metrics():
+    return PlainTextResponse(
+        render_metrics(active_searches=active_search_count(), jobs=job_counts(), map_cache=cache_stats()),
+        media_type="text/plain; version=0.0.4",
+    )
+
+
 @app.get("/backends")
 def backends():
     return {
@@ -124,16 +162,21 @@ async def ai_models(payload: ModelsIn, token: Optional[str] = Cookie(default=Non
 
 
 @app.post("/map")
-def map_view(payload: MapIn):
-    data, warnings = generate_map(
-        payload.seed,
-        payload.version,
-        payload.center_x,
-        payload.center_z,
-        payload.radius,
-        payload.size,
+def map_view(payload: MapIn, response: Response):
+    params = payload.model_dump(mode="json")
+    data, warnings, cache = get_or_create_map(
+        params,
+        lambda: generate_map(
+            payload.seed,
+            payload.version,
+            payload.center_x,
+            payload.center_z,
+            payload.radius,
+            payload.size,
+        ),
     )
-    return {"map": data, "warnings": warnings}
+    response.headers["X-Map-Cache"] = "HIT" if cache["hit"] else "MISS"
+    return {"map": data, "warnings": warnings, "cache": cache}
 
 
 @app.get("/progress/{request_id}")
@@ -254,6 +297,7 @@ async def _run_query(
         def report_progress(**fields):
             update_progress(request_id, **fields)
 
+        ai_started = time.perf_counter()
         planner, plan, warnings = await deepseek_plan(
             message,
             context,
@@ -262,6 +306,7 @@ async def _run_query(
             settings["deepseek_model"],
             progress=report_progress,
         )
+        observe_search_stage("deepseek", planner, time.perf_counter() - ai_started)
         unsupported_reply = _unsupported_plan_reply(plan)
         if unsupported_reply:
             if plan.objective != "ai_required":
@@ -294,6 +339,7 @@ async def _run_query(
             radius=None,
         )
 
+        native_started = time.perf_counter()
         results, search_warnings = await asyncio.to_thread(
             search,
             settings["seed"],
@@ -305,6 +351,7 @@ async def _run_query(
             plan,
             report_progress,
         )
+        observe_search_stage("native", "results" if results else "empty", time.perf_counter() - native_started)
         targets = "、".join(t.label for t in plan.targets)
         if results:
             best = results[0]
@@ -382,6 +429,72 @@ async def _run_query(
         raise
     finally:
         search_activity_finished()
+
+
+async def _execute_persisted_job(job: dict) -> dict:
+    payload = dict(job["payload"])
+    if job["kind"] == "chat":
+        if not job.get("user_id"):
+            raise ValueError("chat job requires a user")
+        message = str(payload["message"])
+        settings = dict(payload["settings"])
+        settings["deepseek_api_key"] = job.get("secret")
+        settings["deepseek_api_key_set"] = bool(job.get("secret"))
+    else:
+        message = str(payload.pop("query"))
+        payload.pop("request_id", None)
+        settings = payload
+        settings["deepseek_api_key"] = job.get("secret")
+        settings["deepseek_api_key_set"] = bool(job.get("secret"))
+    response = await _run_query(message, settings, job["id"], user_id=job.get("user_id"))
+    return response.model_dump(mode="json")
+
+
+def _visible_job(job_id: str, token: str | None) -> dict:
+    item = get_job(job_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if item.get("user_id"):
+        user = optional_user(token)
+        if not user or int(user["id"]) != int(item["user_id"]):
+            raise HTTPException(status_code=404, detail="任务不存在")
+    return item
+
+
+@app.post("/jobs/chat", status_code=202)
+async def enqueue_chat(payload: ChatIn, user=Depends(current_user)):
+    settings = get_settings(user["id"], include_secret=True)
+    secret = settings.pop("deepseek_api_key", None)
+    return create_job(
+        "chat",
+        {"message": payload.message, "settings": settings},
+        user_id=user["id"],
+        secret=secret,
+    )
+
+
+@app.post("/jobs/search", status_code=202)
+async def enqueue_search(payload: SearchIn, token: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE)):
+    data = payload.model_dump()
+    secret = data.pop("deepseek_api_key", None)
+    user = optional_user(token)
+    return create_job("search", data, user_id=user["id"] if user else None, secret=secret)
+
+
+@app.get("/jobs/{job_id}")
+async def job_status(job_id: str, token: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE)):
+    return _visible_job(job_id, token)
+
+
+@app.post("/jobs/{job_id}/cancel")
+async def job_cancel(job_id: str, token: Optional[str] = Cookie(default=None, alias=SESSION_COOKIE)):
+    _visible_job(job_id, token)
+    return cancel_job(job_id)
+
+
+@app.get("/jobs")
+async def user_jobs(limit: int = 20, user=Depends(current_user)):
+    return {"jobs": list_jobs(user["id"], limit)}
 
 
 @app.post("/chat", response_model=ChatOut)
