@@ -1,141 +1,148 @@
-# Minecraft Java 种子地点 AI 查找器 MVP
+# Minecraft Seed AI Finder
 
-这是一个可运行的 Linux MVP：注册/登录、保存 DeepSeek API Key 与种子设置、聊天式查询、后端规划搜索、前端展示结构化坐标结果。
+面向 Minecraft Java 的自然语言种子搜索工具。输入“村庄背靠樱花林、坐落于草原、面朝大海，并且 800 格内有女巫小屋”这类条件，系统会拆解结构、群系、距离和方向约束，再返回坐标、地图与检查结果。
 
-## 当前搜索精度
+项目由 FastAPI 后端、Minecraft native 查询核心和 Minecraft 风格前端组成。默认按 Minecraft Java 26.2 的兼容规则工作，并明确标注近似结果。
 
-内置 `deterministic_compat` 搜索核心是确定性兼容模式，用于打通端到端工作流，不宣称 Minecraft Java 26.2 精确世界生成。接口会在结果里返回 `mode: compatibility`。
+## 一键运行
 
-项目把 cubiomes 固定为 Git 子模块，并通过根目录 `Makefile` 构建 native 查询核心：
+Docker Hub 镜像：
 
-```bash
-git submodule update --init --recursive
-make native
+```text
+lx969788249/mc-seed-ai-finder:latest
 ```
 
-## 安装与启动
-
-### Docker 部署（推荐）
-
-宿主机只需要安装 Docker 和 Docker Compose 插件：
+宿主机只需要 Docker。首次启动会自动生成 Fernet 加密密钥并保存到数据卷：
 
 ```bash
-cd /root/mc-seed-ai-finder
-cp .env.example .env
+docker run -d \
+  --name mc-seed-ai-finder \
+  --restart unless-stopped \
+  -p 8000:8000 \
+  -v mc-seed-data:/app/data \
+  lx969788249/mc-seed-ai-finder:latest
 ```
 
-容器首次启动时会自动在数据卷中生成并保存随机 Fernet 密钥，通常不需要手动填写 `APP_ENCRYPTION_KEY`。如果显式设置该变量，则优先使用你提供的密钥。然后启动：
+打开 `http://服务器IP:8000/` 即可使用。数据卷 `mc-seed-data` 保存 SQLite 数据、自我进化报告和自动生成的密钥。不要删除这个卷，否则已保存的 DeepSeek API Key 将无法解密。
+
+查看日志：
 
 ```bash
+docker logs -f mc-seed-ai-finder
+```
+
+当前镜像面向 `linux/amd64`；ARM 服务器需要自行构建对应架构镜像。
+
+## 使用流程
+
+1. 注册或登录账号。
+2. 在设置中填写 DeepSeek API Key、种子、版本和起点坐标。
+3. 输入自然语言条件，例如：
+
+   ```text
+   找一个村庄，背靠樱花林，坐落于草原，面朝大海，附近 800 格内有女巫小屋
+   ```
+
+4. 查看候选坐标、约束检查、地图和 Chunkbase 核对链接。
+
+未配置 API Key 时，系统可以展示目录和地图能力，但不会执行需要 DeepSeek 解析的搜索。
+
+## 支持的能力
+
+- 结构搜索：村庄、女巫小屋、掠夺者前哨站、神殿、海底神殿、沉船、远古城市等。
+- 群系搜索：平原、樱花林、森林、蘑菇岛、海洋、深海、沙滩等。
+- 组合条件：邻近、距离上限、同一群系、背靠/面朝、相对方向和排除条件。
+- 面积条件：估算群系连通面积，支持“最大的蘑菇岛”和“靠近更大的海洋”等描述。
+- 地表俯视地图：用近似地形高度生成山脊、坡面和海岸明暗，避免把洞穴群系显示成地表群系。
+- 多核 native 查询：独立查询通过多个 subprocess 并行执行，并支持 batch 和锚点组合剪枝。
+- 未满足需求反馈：用户可以标记结果未解决，后台会脱敏记录并在夜间聚类。
+
+## 精度边界
+
+当前后端使用 cubiomes 查询核心，并将 Java 26.2 映射到兼容规则。世界生成规则或结构布局变化时，结果可能与实际版本不同，响应会返回兼容模式和相关说明。
+
+地表高度、群系面积和全域最大值都是可审计的近似计算：
+
+- 地图高度是采样后的近似地表高度，不是完整方块高度图。
+- 群系面积按采样网格和连通区域估算，排名靠前的候选会做更细采样。
+- “最大”表示当前搜索覆盖范围内的近似最大值，不宣称完成全世界穷举。
+
+## Docker Compose
+
+需要从源码构建或修改配置时：
+
+```bash
+git clone --recurse-submodules https://github.com/lx969788249/mc-seed-ai-finder.git
+cd mc-seed-ai-finder
 docker-compose up -d --build
-docker-compose logs -f
 ```
 
-浏览器打开 `http://服务器IP:8000/`。数据库、自我进化报告和自动生成的加密密钥保存在 Docker 卷 `mc-seed-data` 中，容器删除后仍会保留。不要删除这个卷，否则已保存的 API Key 将无法解密。
+新版 Docker Compose 也可以使用 `docker compose up -d --build`。默认端口为 `8000`，可以在 `.env` 中设置：
 
-常用操作：
-
-```bash
-docker-compose ps
-docker-compose restart
-docker-compose down
+```env
+MCFINDER_PORT=8080
+MC_QUERY_WORKERS=8
+MC_QUERY_BATCH_SIZE=64
 ```
 
-如果服务器需要使用其他端口，可在 `.env` 中设置 `MCFINDER_PORT=8080`，然后访问 `http://服务器IP:8080/`。
+## 本地开发
 
-### Python 本机部署
+依赖：Python 3.11+、C 编译器、`make`、Git 和 cubiomes 子模块。
 
 ```bash
-cd /root/mc-seed-ai-finder
+git clone --recurse-submodules https://github.com/lx969788249/mc-seed-ai-finder.git
+cd mc-seed-ai-finder
 git submodule update --init --recursive
 make native
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-如果 Debian/Ubuntu 提示缺少 `ensurepip`，先安装 venv 支持：
+如果 Debian/Ubuntu 缺少 `ensurepip`，先执行 `sudo apt-get install -y python3.11-venv`。
+
+启动开发服务器：
 
 ```bash
-sudo apt-get install -y python3.11-venv
-```
-
-本机临时测试也可以不用 venv：
-
-```bash
-python3 -m pip install --user --break-system-packages -r requirements.txt
-```
-
-把生成的值写入 `.env` 的 `APP_ENCRYPTION_KEY`。开发测试也可以不写，此时 API Key 仍会用开发密钥 Fernet 加密保存，但不适合生产。
-
-启动：
-
-```bash
-source .venv/bin/activate
-set -a; [ -f .env ] && . ./.env; set +a
+set -a
+[ -f .env ] && . ./.env
+set +a
 uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
 
-浏览器打开 `http://服务器IP:8000/`。
+## 配置项
 
-## 性能配置
-
-搜索核心会把独立的 cubiomes/native 查询拆成多个 subprocess 并行运行。默认并行度是 `min(8, CPU核心数)`。
-
-### 地表俯视地图
-
-地图 tile 会先用 cubiomes 估算每个采样点的地表高度，再在地表上方读取群系。前端根据相邻高度生成地形明暗，因此山脊、坡面和海岸会以俯视地形显示，不再把固定 `Y=63` 处的繁茂洞穴、溶洞或深暗之域画到山体表面。悬停信息中的地表高度属于近似值，不代表完整的方块级高度图。
-
-### 群系面积搜索
-
-搜索计划支持 `biome_area_constraints` 和 `largest_area`：
-
-- “找这个种子里最大的蘑菇岛”会在可玩范围内执行确定性抽样，粗测候选后对排名靠前的区域做 4 格精测。
-- “找靠近大海的村庄，大海要大一点”会把模糊大小转换为海洋连通面积下限，并参与候选审核。
-- 面积按 `Y=63` 的二维群系投影计算；全域最大值属于高覆盖近似排名，不宣称穷举世界后得到数学意义上的绝对最大值。
-
-可在 `.env` 中调整：
-
-```bash
-MC_QUERY_WORKERS=8
-MC_QUERY_BATCH_SIZE=64
-```
-
-`MC_QUERY_WORKERS` 控制同时运行的 native 查询进程数；`MC_QUERY_BATCH_SIZE` 控制每个 batch subprocess 内包含多少个局部查询。严苛组合搜索、大范围 tile 扫描和锚点附近目标筛选都会使用这个并行配置。
-
-强锚点组合搜索会优先使用 `native/mc_query anchor_combo`，把“一个锚点附近依次检查多个目标”的剪枝流程放到 C/native 进程里执行；如果 native 组合接口不可用，后端会回退到逐目标批量查询。
+| 变量 | 作用 | 默认值 |
+| --- | --- | --- |
+| `APP_ENCRYPTION_KEY` | 加密数据库中的 DeepSeek API Key；Docker 未指定时自动生成 | 自动生成 |
+| `MCFINDER_DB` | SQLite 数据库路径 | `data/app.sqlite3` |
+| `MCFINDER_EVOLUTION_DIR` | 自我进化报告目录 | `data/evolution` |
+| `MC_QUERY_WORKERS` | native 查询并行度 | 根据 CPU 自动选择 |
+| `MC_QUERY_BATCH_SIZE` | 每个 native batch 的查询数量 | `64` |
+| `EVOLUTION_NIGHT_HOUR` | 夜间聚合小时 | `3` |
+| `EVOLUTION_NIGHT_MINUTE` | 夜间聚合分钟 | `30` |
+| `EVOLUTION_RETENTION_DAYS` | 反馈保留天数 | `90` |
 
 ## 自我进化闭环
 
-后端会自动记录明确不支持、没有可验证结果、约束未满足和执行异常的搜索。用户也可以在结果区点击“标记未解决”，该反馈会以更高权重进入改进队列。记录只包含脱敏后的请求、复现所需世界参数和搜索计划，不保存 API Key、Session Token、密码、Cookie 或 IP。
+系统会记录明确不支持、没有可验证结果、约束未满足、执行异常和用户主动标记未解决的事件。记录会脱敏，不保存 API Key、Session Token、密码、Cookie 或 IP。
 
-每天本地时间 `03:30`，调度器会等待当前搜索任务归零，再对最近 90 天事件做去重聚类和优先级排序。报告写入：
+每天本地时间 `03:30`，后台等待搜索任务归零后进行去重聚类和优先级排序，报告写入：
 
 - `data/evolution/latest.json`：供后续编码代理消费的任务清单。
-- `data/evolution/latest.md`：便于人工审阅的优先级报告。
-- `data/evolution/runs/`：每次夜间聚合的历史快照。
+- `data/evolution/latest.md`：人工审阅报告。
+- `data/evolution/runs/`：历史聚合结果。
 
-可以手动生成一次报告：
+当前阶段只生成修复任务，不会让线上进程直接修改或发布自身代码。后续接入 Codex 时，应保留隔离分支、自动测试、行为验收和人工批准四道门槛。
+
+手动生成报告：
 
 ```bash
 python3 -m backend.evolution
 ```
 
-可通过环境变量调整：
-
-```bash
-EVOLUTION_NIGHT_HOUR=3
-EVOLUTION_NIGHT_MINUTE=30
-EVOLUTION_RETENTION_DAYS=90
-EVOLUTION_MAX_EVENTS_PER_DAY=5000
-EVOLUTION_MAX_CLUSTER_EVENTS_PER_DAY=100
-```
-
-当前阶段只自动生成修复任务，不允许线上进程直接修改或发布自身代码。自动修复需要在后续接入隔离分支、自动测试、行为验收和人工批准四道门槛后启用。
-
-## API
+## API 入口
 
 - `POST /auth/register`
 - `POST /auth/login`
@@ -150,29 +157,25 @@ EVOLUTION_MAX_CLUSTER_EVENTS_PER_DAY=100
 - `GET /catalog`
 - `GET /backends`
 
-`/chat` 使用登录用户保存的配置。`/search` 可直接传 `query/seed/version/center_x/center_z/max_results` 做无登录测试。搜索不会因为用户配置的半径提前停止，会自动扩大到 Minecraft Java 可玩世界范围；用户自然语言里的“附近 N 格内”只作为目标之间的距离约束。
+`/chat` 使用登录用户保存的配置；`/search` 支持直接传入 `query`、`seed`、`version`、`center_x`、`center_z` 和 `max_results` 做无登录测试。
 
-## 安全说明
+## 数据和安全
 
-- DeepSeek API Key 不写入前端源码。
-- 后端不会打印 API Key。
-- 登录密码使用 PBKDF2-HMAC-SHA256 hash 保存。
-- API Key 使用 `APP_ENCRYPTION_KEY` 派生的 Fernet 密钥加密保存。
-- SQLite 数据库默认在 `data/app.sqlite3`。
+- API Key 只在后端保存，使用 Fernet 加密。
+- 登录密码使用 PBKDF2-HMAC-SHA256 哈希保存。
+- 数据库和进化报告默认位于 `data/`，Docker 中位于 `/app/data`。
+- `.env`、SQLite 文件、日志、崩溃转储和编译产物不会提交到 Git。
+- 生产环境应使用命名卷或宿主机备份，并限制 Docker 容器访问权限。
 
 ## 验收测试
 
 ```bash
-curl -s http://127.0.0.1:8000/catalog
-curl -s -X POST http://127.0.0.1:8000/search \
-  -H 'Content-Type: application/json' \
-  -d "{\"query\":\"帮我找一下离我最近的村庄\",\"seed\":\"12345\",\"version\":\"26.2\",\"center_x\":0,\"center_z\":0,\"max_results\":1,\"deepseek_api_key\":\"${DEEPSEEK_API_KEY}\"}"
+make test
+curl -fsS http://127.0.0.1:8000/catalog
 ```
 
-网页流程：
+当前测试覆盖面积搜索、相对布局、地表地图和自我进化反馈，共 18 项标准库 `unittest` 测试。
 
-1. 注册并自动登录。
-2. 保存 DeepSeek API Key、seed、版本和当前位置。
-3. 输入“帮我找一下离我最近的村庄”。
-4. 查看 AI 回复、候选坐标、约束结果和 Chunkbase 核对链接。
-5. 不填 API Key 时，系统会提示先配置 DeepSeek API Key，搜索核心不会运行。
+## 许可证和依赖
+
+项目使用 cubiomes 作为 Git 子模块，许可证文件位于 `vendor/cubiomes/LICENSE`。重新分发镜像或源码时请一并保留上游许可证。
