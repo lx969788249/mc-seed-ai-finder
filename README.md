@@ -24,14 +24,14 @@ cd /root/mc-seed-ai-finder
 cp .env.example .env
 ```
 
-生产环境请把 `.env` 里的 `APP_ENCRYPTION_KEY` 改成随机 Fernet 密钥，然后启动：
+容器首次启动时会自动在数据卷中生成并保存随机 Fernet 密钥，通常不需要手动填写 `APP_ENCRYPTION_KEY`。如果显式设置该变量，则优先使用你提供的密钥。然后启动：
 
 ```bash
 docker-compose up -d --build
 docker-compose logs -f
 ```
 
-浏览器打开 `http://服务器IP:8000/`。数据库和自我进化报告保存在 Docker 卷 `mc-seed-data` 中，容器删除后仍会保留。
+浏览器打开 `http://服务器IP:8000/`。数据库、自我进化报告和自动生成的加密密钥保存在 Docker 卷 `mc-seed-data` 中，容器删除后仍会保留。不要删除这个卷，否则已保存的 API Key 将无法解密。
 
 常用操作：
 
