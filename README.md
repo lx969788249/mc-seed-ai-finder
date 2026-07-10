@@ -15,6 +15,36 @@ make native
 
 ## 安装与启动
 
+### Docker 部署（推荐）
+
+宿主机只需要安装 Docker 和 Docker Compose 插件：
+
+```bash
+cd /root/mc-seed-ai-finder
+cp .env.example .env
+```
+
+生产环境请把 `.env` 里的 `APP_ENCRYPTION_KEY` 改成随机 Fernet 密钥，然后启动：
+
+```bash
+docker-compose up -d --build
+docker-compose logs -f
+```
+
+浏览器打开 `http://服务器IP:8000/`。数据库和自我进化报告保存在 Docker 卷 `mc-seed-data` 中，容器删除后仍会保留。
+
+常用操作：
+
+```bash
+docker-compose ps
+docker-compose restart
+docker-compose down
+```
+
+如果服务器需要使用其他端口，可在 `.env` 中设置 `MCFINDER_PORT=8080`，然后访问 `http://服务器IP:8080/`。
+
+### Python 本机部署
+
 ```bash
 cd /root/mc-seed-ai-finder
 git submodule update --init --recursive
