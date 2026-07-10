@@ -43,14 +43,18 @@ COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /build/backend ./backend
 COPY --from=builder /build/frontend ./frontend
 COPY --from=builder /build/native/mc_query ./native/mc_query
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
 
 RUN mkdir -p /app/data \
+    && chmod 755 /app/docker-entrypoint.sh \
     && chown -R app:app /app
 
 USER app
 
 VOLUME ["/app/data"]
 EXPOSE 8000
+
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/catalog', timeout=3)"
